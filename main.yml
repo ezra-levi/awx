@@ -1,4 +1,0 @@
----
-- import_playbook: pg_backup_db.yml
-- import_playbook: pg_restore_db.yml
-
