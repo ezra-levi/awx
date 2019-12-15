@@ -1,0 +1,4 @@
+=== POSTGRES CMS MIGRATOR ANSIBLE PLAYBOOK ===
+
+Required params: cluster_master_src, dbname_src, cluster_master_dst, dbname_dst, artifactory_url
+Optional params: TBD

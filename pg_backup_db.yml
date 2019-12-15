@@ -1,0 +1,78 @@
+---
+- hosts: "{{ cluster_master_src | default('none') }}"
+  become: true
+  vars:
+    bkpfile: "{{ dbname_src }}.sql.gz"
+    bkpfile_globals: "{{ dbname_src }}.globals.sql.gz"
+    fullbkpfile: "/tmp/{{ bkpfile }}"
+    fullbkpfile_globals: "/tmp/{{ bkpfile_globals }}"
+    artifactory_url: "https://artifactory.sbtech.com/artifactory/DataTeam/pgsql/cms_sync"
+  tasks:
+
+  - name: Check if database exists
+    shell: psql -l|awk '{print $1}'|grep -w  {{ dbname_src }}
+    become_user: postgres
+    register: postgres_database_exists
+    ignore_errors: True
+
+  - name: Display db exist result
+    debug:
+      var: postgres_database_exists.stdout_lines
+
+  - name: Validate DB existence
+    assert:
+      that:
+        - postgres_database_exists.stdout_lines | list | length != 0
+
+
+  - name: Update query ( migration tool fix bug)
+    shell: psql --dbname={{ dbname_src }} -t -c "update datastore.pages set jsonproperties = '{}' where jsonproperties::text like '<%';"
+    become_user: postgres
+    register: postgres_database_query_update
+    when: postgres_database_exists.stdout_lines | list | length > 0
+    ignore_errors: True
+
+  - name: Get Users roles
+    shell: psql --dbname={{ dbname_src }} -t -c "with CTE as ( SELECT grantor FROM sbtech_all_user_permissions WHERE grantor NOT IN ('PUBLIC','postgres') UNION SELECT grantee FROM sbtech_all_user_permissions WHERE grantee NOT IN ('PUBLIC','postgres')) select * from cte union  select rolname from pg_user join pg_auth_members on (pg_user.usesysid=pg_auth_members.member) join pg_roles on (pg_roles.oid=pg_auth_members.roleid) where pg_user.usename in (select * from cte);"
+    become_user: postgres
+    register: postgres_database_users
+    when: postgres_database_exists.stdout_lines | list | length > 0
+
+  - name: Dump Global users
+    shell: pg_dumpall --globals-only |grep -w "{{ postgres_database_users.stdout_lines |join ('\|') | regex_replace('\s*', '') }}" | gzip -9 > {{ fullbkpfile_globals }}
+    become_user: postgres
+    register: postgres_database_globals_dump
+    when: postgres_database_users.stdout_lines | list | length > 0
+
+  - name: Upload globals to Artifactory if dump exists
+    shell: curl -k -X PUT -u datateam.user:KfdJDC3pySTZMy5P -T {{ fullbkpfile_globals }} {{ artifactory_url }}/{{ bkpfile_globals }}
+    become_user: postgres
+    register: postgres_database_globals_upload
+    when: postgres_database_globals_dump.changed
+
+
+  - name: Dump database if exists
+    shell: pg_dump --dbname={{ dbname_src }} --blobs | gzip -9 > {{ fullbkpfile }}
+    #shell: pg_dump --dbname={{ dbname_src }} --blobs --clean --if-exists | gzip -9 > {{ fullbkpfile }}
+    #shell: pg_dump --dbname={{ dbname_src }} --no-acl --no-owner | gzip -9 > {{ fullbkpfile }}
+    become_user: postgres
+    register: postgres_database_dump
+    when: postgres_database_exists.stdout_lines | list | length > 0
+
+  - name: Upload to Artifactory if dump exists
+    shell: curl -k -X PUT -u datateam.user:KfdJDC3pySTZMy5P -T {{ fullbkpfile }} {{ artifactory_url }}/{{ bkpfile }}
+    become_user: postgres
+    register: postgres_database_upload
+    when: postgres_database_dump.changed
+
+
+  - name: Clean backup file after upload 
+    file:
+      state: absent
+      path: "{{ fullbkpfile }}"
+
+  - name: Clean globals backup file after upload 
+    file:
+      state: absent
+      path: "{{ fullbkpfile_globals }}"
+
